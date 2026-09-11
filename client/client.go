@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"redis/resp"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -20,8 +19,6 @@ func main() {
 		return
 	}
 	stdinReader := bufio.NewReader(os.Stdin)
-	connReader := bufio.NewReader(conn)
-	timeout := 0
 	nowFormatted := time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	fmt.Printf("1:M %s # Server initialized\n", nowFormatted)
 	fmt.Printf("1:M %s * Ready to accept connections\n", nowFormatted)
@@ -34,10 +31,6 @@ func main() {
 			if err == io.EOF {
 				conn.Close()
 				return
-			}
-			timeout++
-			if timeout == 1000 {
-				break
 			}
 			continue
 		}
@@ -75,55 +68,8 @@ func main() {
 			continue
 		}
 		conn.Write(resp.EncodeCommand(cmdTab))
-		stop := 0
-		count := 1
-		for {
-			conn.SetReadDeadline(time.Now().Add(time.Minute))
-			response, err := connReader.ReadString('\n')
-			if err != nil {
-				fmt.Println(err)
-				if err == io.EOF {
-					fmt.Println("server disconnected")
-					conn.Close()
-					return
-				}
-				timeout++
-				if timeout == 100 {
-					break
-				}
-				continue
-			}
-			if !(response[0] == '+' || response[0] == '-' || response[0] == ':' || response[0] == '$' || response[0] == '*') {
-				fmt.Print("-ERR unknown response\r\n")
-				break
-			}
-			stop++
-			timeout = 0
-			if response[0] == '+' || response[0] == '-' || response[0] == ':' || strings.HasPrefix(response, "$-1") || strings.HasPrefix(response, "*-1") {
-				fmt.Print(response)
-				break
-			}
-			if response[0] == '*' {
-				strVal := strings.TrimSpace(response[1:])
-				num, err := strconv.Atoi(strVal)
-				if err != nil {
-					fmt.Print(err)
-					break
-				}
-				count += num
-			}
-
-			if response[0] == '$' {
-				valLine, err := connReader.ReadString('\n')
-				if err != nil {
-					break
-				}
-				fmt.Printf("\"%s\" \n", strings.TrimSuffix(valLine, "\r\n"))
-			}
-
-			if count == stop {
-				break
-			}
-		}
+		connReader := bufio.NewReader(conn)
+		resp.ReadResponse(connReader)
 	}
 }
+

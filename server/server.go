@@ -63,7 +63,7 @@ func main() {
 		byteReader := bytes.NewReader(aof)
 		reader := bufio.NewReader(byteReader)
 		for {
-			cmds, err := readCommand(reader)
+			cmds, err := resp.ReadCommand(reader)
 			if err != nil {
 				if err == io.EOF {
 					break
@@ -120,7 +120,7 @@ func HandleConnection(conn net.Conn) {
 	var queue [][]string
 	watchedKeys := make(map[string]int)
 	for {
-		cmds, err := readCommand(reader)
+		cmds, err := resp.ReadCommand(reader)
 		if err != nil {
 			if err == io.EOF {
 				fmt.Println("client disconnected : ", err)
@@ -153,7 +153,8 @@ func HandleConnection(conn net.Conn) {
 				}
 				inTransaction = true
 				queue = [][]string{}
-				conn.Write(response)
+				conn.Write(resp.OkResponse())
+    			continue  
 			case "WATCH" :
 				shardLocks[index].Lock()
 				for i := 1; i < len(cmds); i++ { 
@@ -170,37 +171,39 @@ func HandleConnection(conn net.Conn) {
 				response = resp.OkResponse()
 				conn.Write(response)
 				continue
- 			case "EXEC" :
-				if !inTransaction {
-					response = resp.ErrorResponse("EXEC without MULTI")
-					conn.Write(response)
-					continue	
-					}
-				abort := false
-				keyVersionsMu.Lock()
-				for key := range watchedKeys {
-					if watchedKeys[key] != keyVersions[key]{
-						abort = true
-						break
-					}
-				}
-				keyVersionsMu.Unlock()
-				clear(watchedKeys)
-				if abort {
-					inTransaction = false
-					queue = nil
-					response = resp.NullResponse()
-					conn.Write(response)
-					continue}
-				arrayLen := fmt.Sprintf("*%d\r\n", len(queue))
-				response = append(response, []byte(arrayLen)...)
-				for i := range queue {
-					response = append(response, writeResponse((queue)[i], false)...)
-				}
-				conn.Write(response)
-				inTransaction = false
-				queue = nil
-			case "DISCARD" :
+ 			case "EXEC":
+		if !inTransaction {
+			conn.Write(resp.ErrorResponse("EXEC without MULTI"))
+			continue
+		}
+		abort := false
+		keyVersionsMu.Lock()
+		for key := range watchedKeys {
+			if watchedKeys[key] != keyVersions[key] {
+				abort = true
+				break
+			}
+		}
+		keyVersionsMu.Unlock()
+		clear(watchedKeys)
+		if abort {
+			inTransaction = false
+			queue = nil
+			conn.Write(resp.NullResponse())
+			continue
+		}
+
+		// Build array response
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("*%d\r\n", len(queue)))
+		for _, qcmd := range queue {
+			sb.Write(writeResponse(qcmd, false))
+		}
+		conn.Write([]byte(sb.String()))
+
+		inTransaction = false
+		queue = nil
+	case "DISCARD" :
 				if !inTransaction {
 					response = resp.ErrorResponse("DISCARD without MULTI")
 					conn.Write(response)
@@ -224,47 +227,6 @@ func HandleConnection(conn net.Conn) {
 	}
 }
 
-func readCommand(reader *bufio.Reader) ([]string, error) {
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return nil, err
-	}
-	nbrCmd, err := strconv.Atoi(GetCmdSize(line))
-	if err != nil {
-		fmt.Println(err)
-		return nil, err
-	}
-	var cmds []string
-	for i := 0; i < nbrCmd; i++ {
-		size, err := reader.ReadString('\n')
-		if err != nil {
-			return nil, err
-		}
-		sizeVal, err := strconv.Atoi(GetCmdSize(size))
-		if err != nil {
-			fmt.Println("failed conversion : ", err)
-			return nil, err
-		}
-		cmdBuf := make([]byte, sizeVal)
-		_, err = io.ReadFull(reader, cmdBuf)
-		if err != nil {
-			return nil, err
-		}
-		cmdVal := string(cmdBuf)
-		cmds = append(cmds, cmdVal)
-		_, err = reader.ReadString('\n')
-		if err != nil {
-			return nil, err
-		}
-	}
-	return cmds, nil
-}
-
-func GetCmdSize(chunk string) string {
-	strTab := strings.Split(chunk, "\r\n")
-	valStr := strTab[0]
-	return valStr[1:]
-}
 
 func writeResponse(cmds []string, isReplay bool) []byte {
 	min, op := getMinArgs(cmds[0]) 
@@ -519,6 +481,7 @@ func getMinArgs(cmd string) (int,string){
 			min = 2
 		case "LPUSH", "RPUSH" : 
 			min = 3
+			op = ">="
 		case "LRANGE" : 
 			min = 4
 		case "LLEN" : 
@@ -543,6 +506,7 @@ func getMinArgs(cmd string) (int,string){
 			op = ">="
 		case "HSET": 
 			min = 4
+			op = ">="
 		case "HGET" :
 			min = 3
 		case "HGETALL" :
@@ -559,8 +523,11 @@ func getMinArgs(cmd string) (int,string){
 		case "LSET":
 			min = 4
 		case "LTRIM":
-			min = 4
-		case "PING", "DBSIZE", "FLUSHALL", "MULTI", "EXEC", "DISCARD":
+			min = 4 
+		case "WATCH":
+        	min = 2
+        	op = ">="
+		case "PING", "DBSIZE", "FLUSHALL", "MULTI", "EXEC", "DISCARD","UNWATCH":
     		min = 1
 	}
 	return min, op
@@ -1072,38 +1039,58 @@ func HandlePing() []byte {
 		logToAOF(cmds,isReplay)
 		return resp.IntResponse(removedNbr)
 	}
-	func HandleHSet(cmds []string, index int, isReplay bool) []byte {  
-		shardLocks[index].Lock()
-		defer shardLocks[index].Unlock()
-		key := cmds[1]
-		field := cmds[2]
-		val := cmds[3]
-		removeIfExpired(key, index)
-		data, ok := shards[index][key]
-		if ok {
-			if data.kind != "hash"{
-				return resp.ErrorResponse("value not a hash")
-				}
-			incKeyVersion(key)
-			exists := false
-			if _, ok := (*data.hashVal)[field]; ok {
-            	exists = true
-        	}
-			(*data.hashVal)[field] = val
-			shards[index][key] = data
-			logToAOF(cmds, isReplay)
-			if exists {
-				return resp.IntResponse(0)
-			}
-			return resp.IntResponse(1)
-		}else{
-			hashVal := make(map[string]string)
-			hashVal[field] = val
-			shards[index][key] = entry{"hash",nil,nil,&hashVal,nil,time.Time{}}
-			logToAOF(cmds,isReplay)
-			return resp.IntResponse(1)
-		}
-	}
+	func HandleHSet(cmds []string, index int, isReplay bool) []byte {
+    shardLocks[index].Lock()
+    defer shardLocks[index].Unlock()
+
+    key := cmds[1]
+    removeIfExpired(key, index)
+
+    data, ok := shards[index][key]
+    added := 0
+
+    // If the key doesn't exist, create a new hash with all field‑value pairs
+    if !ok {
+        hashVal := make(map[string]string)
+        for i := 2; i < len(cmds); i += 2 {
+            if i+1 >= len(cmds) {
+                break
+            }
+            hashVal[cmds[i]] = cmds[i+1]
+            added++
+        }
+        shards[index][key] = entry{"hash", nil, nil, &hashVal, nil, time.Time{}}
+        incKeyVersion(key)
+        logToAOF(cmds, isReplay)
+        return resp.IntResponse(added)
+    }
+
+    // Key exists – verify it's a hash
+    if data.kind != "hash" {
+        return resp.ErrorResponse("value not a hash")
+    }
+
+    // Process all field‑value pairs
+    for i := 2; i < len(cmds); i += 2 {
+        if i+1 >= len(cmds) {
+            break
+        }
+        field := cmds[i]
+        val := cmds[i+1]
+
+        if _, exists := (*data.hashVal)[field]; !exists {
+            added++
+        }
+        (*data.hashVal)[field] = val
+    }
+
+    // Update shard and log only if something changed
+    shards[index][key] = data
+        incKeyVersion(key)
+        logToAOF(cmds, isReplay)
+
+    return resp.IntResponse(added)
+}
 	func HandleHGet(cmds []string, index int, isReplay bool) []byte {  
 		shardLocks[index].RLock()
 		defer shardLocks[index].RUnlock()
