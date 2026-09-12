@@ -19,6 +19,7 @@ func main() {
 		return
 	}
 	stdinReader := bufio.NewReader(os.Stdin)
+	connReader := bufio.NewReader(conn)
 	nowFormatted := time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	fmt.Printf("1:M %s # Server initialized\n", nowFormatted)
 	fmt.Printf("1:M %s * Ready to accept connections\n", nowFormatted)
@@ -68,8 +69,18 @@ func main() {
 			continue
 		}
 		conn.Write(resp.EncodeCommand(cmdTab))
-		connReader := bufio.NewReader(conn)
-		resp.ReadResponse(connReader)
+		response, readErr := resp.ReadResponse(connReader)
+		if response != "" {
+			fmt.Println(response)
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				fmt.Println("server disconnected")
+			} else {
+				fmt.Println(readErr)
+			}
+			conn.Close()
+			return
+		}
 	}
 }
-
