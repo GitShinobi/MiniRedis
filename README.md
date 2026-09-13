@@ -45,7 +45,7 @@ This project is designed to be educational, lightweight, and easy to extend.
 
 ```bash
 # Clone the repository
-git clone https://github.com/[your-username]/redis.git
+git clone https://github.com/GitShinobi/MiniRedis.git
 cd redis
 
 # Run the server
