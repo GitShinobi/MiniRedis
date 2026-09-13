@@ -52,7 +52,12 @@ cd redis
 go run server.go
 ```
 
-The server starts on `localhost:8080`.
+You'll see a prompt:
+
+```
+1:C 2026-09-13T11:07:36.639Z # oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+1:C 2026-09-13T11:07:36.639Z # Configuration loaded
+```
 
 ### Running the Client
 
