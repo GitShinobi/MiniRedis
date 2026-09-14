@@ -26,7 +26,8 @@ func main() {
 	fmt.Println("listening on localhost:8080")
 	for {
 		fmt.Print("redis:8080> ")
-		cmd, err := stdinReader.ReadString('\n')
+		userInput, err := stdinReader.ReadString('\n')
+		userInput = strings.TrimRight(userInput, "\r\n")
 		if err != nil {
 			fmt.Println(err)
 			if err == io.EOF {
@@ -35,24 +36,36 @@ func main() {
 			}
 			continue
 		}
-		quotedCmd := ""
-		quoted := 0
-		for i := 0; i < len(cmd); i++ {
-			if cmd[i] == '"' {
-				quoted++
-				if quoted == 2 {
-					break
+		val := ""
+		quote := 0
+		cmdTab := []string{}
+		for i := 0; i < len(userInput); i++ {
+			if userInput[i] == ' ' && quote == 0  {
+				if val != ""{
+					cmdTab = append(cmdTab, val)
+					val = ""
+				}
+					continue
+			}
+			if userInput[i] == '"' {
+				quote++
+				if quote == 2 {
+					quote = 0
+					cmdTab = append(cmdTab, val)
+					val = ""
 				}
 				continue
 			}
-			if quoted == 1 {
-				quotedCmd += string(cmd[i])
+			val += string(userInput[i])
+		}
+		if val != "" {
+    		cmdTab = append(cmdTab, val)
 			}
+		if quote == 1 {
+			fmt.Println("ERR: Unclosed Quote")
+			continue
 		}
-		cmdTab := strings.Fields(cmd)
-		if quoted == 2 {
-			cmdTab = []string{cmdTab[0], cmdTab[1], quotedCmd}
-		}
+
 		if len(cmdTab) == 0 {
 			continue
 		}

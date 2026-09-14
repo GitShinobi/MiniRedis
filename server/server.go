@@ -37,7 +37,7 @@ var keyVersions map[string]int
 const (
 	NumShards       = 16
 	RewriteInterval = 24 * time.Hour
-	FlushThreshold  = 10
+	FlushThreshold  = 1
 )
 
 func init() {
@@ -95,7 +95,7 @@ func main() {
 				shardLocks[i].Unlock()
 			}
 			cmdBufMu.Lock()
-			if len(cmdBuffer) > FlushThreshold {
+			if len(cmdBuffer) >= FlushThreshold {
 				appendCommand(cmdBuffer, "aof.log")
 				cmdBuffer = [][]string{}
 			}
@@ -677,6 +677,7 @@ func HandleFlushAll() []byte {
 	return resp.OkResponse()
 }
 func HandleLPush(cmds []string, index int, isReplay bool) []byte {
+	// fmt.Printf("LPUSH cmds=%q len=%d index=%d", cmds, len(cmds), index)
 	shardLocks[index].Lock()
 	defer shardLocks[index].Unlock()
 	key := cmds[1]
@@ -687,15 +688,14 @@ func HandleLPush(cmds []string, index int, isReplay bool) []byte {
 		newValues = append(newValues, cmds[i])
 	}
 	slices.Reverse(newValues)
+	incKeyVersion(key)
 	if ok {
 		if data.kind != "list" {
 			return resp.ErrorResponse("value not a list")
 		}
-		incKeyVersion(key)
 		*(data.listVal) = append(newValues, *data.listVal...)
 	} else {
 		data = entry{"list", nil, &newValues, nil, nil, time.Time{}}
-		shards[index][key] = data
 	}
 	shards[index][key] = data
 	logToAOF(cmds, isReplay)
