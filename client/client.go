@@ -10,6 +10,7 @@ import (
 	"redis/resp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 func main() {
@@ -39,15 +40,15 @@ func main() {
 		val := ""
 		quote := 0
 		cmdTab := []string{}
-		for i := 0; i < len(userInput); i++ {
-			if userInput[i] == ' ' && quote == 0  {
+		for _, char := range userInput {
+			if unicode.IsSpace(char) && quote == 0 {
 				if val != ""{
 					cmdTab = append(cmdTab, val)
 					val = ""
 				}
 					continue
 			}
-			if userInput[i] == '"' {
+			if char == '"' {
 				quote++
 				if quote == 2 {
 					quote = 0
@@ -56,7 +57,7 @@ func main() {
 				}
 				continue
 			}
-			val += string(userInput[i])
+			val += string(char)
 		}
 		if val != "" {
     		cmdTab = append(cmdTab, val)
@@ -82,6 +83,11 @@ func main() {
 			continue
 		}
 		conn.Write(resp.EncodeCommand(cmdTab))
+		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Minute)); err != nil {
+			fmt.Println("failed setting read deadline:", err)
+			conn.Close()
+			return
+		}
 		response, readErr := resp.ReadResponse(connReader)
 		if response != "" {
 			fmt.Println(response)

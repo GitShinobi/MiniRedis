@@ -35,9 +35,9 @@ var keyVersionsMu sync.Mutex
 var keyVersions map[string]int
 
 const (
-	NumShards       = 16
-	RewriteInterval = 24 * time.Hour
-	FlushThreshold  = 1
+	NumShards       = 16 				// nombre de fragments du magasin
+	RewriteInterval = 24 * time.Hour	 // fréquence de réécriture de l'AOF
+	FlushThreshold  = 10             	 // seuil de purge du tampon de commandes
 )
 
 func init() {
@@ -120,6 +120,10 @@ func HandleConnection(conn net.Conn) {
 	var queue [][]string
 	watchedKeys := make(map[string]int)
 	for {
+		if err := conn.SetReadDeadline(time.Now().Add(5 * time.Minute)); err != nil {
+			fmt.Println("failed setting read deadline:", err)
+			return
+		}
 		cmds, err := resp.ReadCommand(reader)
 		if err != nil {
 			if err == io.EOF {
@@ -529,8 +533,8 @@ func HandleSet(cmds []string, index int, isReplay bool) []byte {
 	defer shardLocks[index].Unlock()
 	key := cmds[1]
 	val := cmds[2]
-	incKeyVersion(key)
 	shards[index][key] = entry{"string", &val, nil, nil, nil, time.Time{}}
+	incKeyVersion(key)
 	logToAOF(cmds, isReplay)
 	return resp.OkResponse()
 }
@@ -688,14 +692,15 @@ func HandleLPush(cmds []string, index int, isReplay bool) []byte {
 		newValues = append(newValues, cmds[i])
 	}
 	slices.Reverse(newValues)
-	incKeyVersion(key)
 	if ok {
 		if data.kind != "list" {
 			return resp.ErrorResponse("value not a list")
 		}
 		*(data.listVal) = append(newValues, *data.listVal...)
+		incKeyVersion(key)
 	} else {
 		data = entry{"list", nil, &newValues, nil, nil, time.Time{}}
+		incKeyVersion(key)
 	}
 	shards[index][key] = data
 	logToAOF(cmds, isReplay)
@@ -1291,12 +1296,10 @@ func HandleLTrim(cmds []string, index int, isReplay bool) []byte {
 	if data.kind != "list" {
 		return resp.ErrorResponse("value not a list")
 	}
-	incKeyVersion(key)
 	size := len(*data.listVal)
 	if isExpired(key, index) || size == 0 {
 		return resp.OkResponse()
 	}
-	logToAOF(cmds, isReplay)
 	if start < 0 {
 		start = size + start
 		if start < 0 {
@@ -1318,6 +1321,8 @@ func HandleLTrim(cmds []string, index int, isReplay bool) []byte {
 	} else {
 		*data.listVal = (*data.listVal)[start : stop+1]
 	}
+	incKeyVersion(key)
+	logToAOF(cmds, isReplay)
 	shards[index][key] = data
 	return resp.OkResponse()
 }

@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	maxBulkPayload   = 512 * 1024 * 1024
-	maxArrayElements = 1_000_000
+	maxBulkPayload   = 512 * 1024 * 1024  // 512 Mo
+	maxArrayElements = 1_000_000    // 1 million d'éléments
 )
 
 func EncodeCommand(cmds []string) []byte {
